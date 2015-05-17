@@ -44,6 +44,10 @@ pub fn exists<'a, 'tcx>(fcx: &FnCtxt<'a, 'tcx>,
         Err(NoMatch(..)) => false,
         Err(Ambiguity(..)) => true,
         Err(ClosureAmbiguity(..)) => true,
+        Err(CycleEncountered(..)) => {
+            fcx.tcx().sess.span_bug(span,
+                                    "unexpectedly found cycle during method resolution")
+        }
     }
 }
 

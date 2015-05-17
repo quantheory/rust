@@ -98,6 +98,13 @@ pub fn report_error<'a, 'tcx>(fcx: &FnCtxt<'a, 'tcx>,
             };
             fcx.sess().span_err(span, &msg);
         }
+
+        ResolveError::CycleEncountered(trait_def_id) => {
+            let msg = format!("a cycle was encountered when resolving the `{}` \
+                               trait during resolution of associated items",
+                              ty::item_path_str(fcx.tcx(), trait_def_id));
+            fcx.sess().span_err(span, &msg);
+        }
     }
 
     fn report_candidates(fcx: &FnCtxt,

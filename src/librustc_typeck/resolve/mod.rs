@@ -41,6 +41,9 @@ pub enum ResolveError {
 
     // Using a `Fn`/`FnMut`/etc method on a raw closure type before we have inferred its kind.
     ClosureAmbiguity(/* DefId of fn trait */ ast::DefId),
+
+    // Encountered a cycle during resolution.
+    CycleEncountered(/* DefId of type or trait */ ast::DefId),
 }
 
 // A pared down enum describing just the places from which a
@@ -66,6 +69,8 @@ pub trait ResolveCtxt<'a, 'tcx>: AstConv<'tcx> {
     // current scope to implement specific traits.
     fn trait_predicates(&self) -> Vec<ty::Predicate<'tcx>>;
 
+    fn get_predicates(&self, did: ast::DefId) -> ty::GenericPredicates<'tcx>;
+
     // Create the steps for a method call, or the single "step" for UFCS
     // resolution.
     fn create_steps(&self, Span, Ty<'tcx>, probe::Mode)
@@ -81,6 +86,10 @@ pub trait ResolveCtxt<'a, 'tcx>: AstConv<'tcx> {
     // The type is expected to have any associated types normalized.
     fn impl_ty_and_substs(&self, span: Span, impl_def_id: ast::DefId)
                           -> (Ty<'tcx>, subst::Substs<'tcx>);
+
+    // Get a type by just looking it up if possible, used for weeding
+    // out bad candidates with `fast_reject`.
+    fn fast_impl_ty(&self, impl_def_id: ast::DefId) -> ty::TypeScheme<'tcx>;
 
     // Within this context, check that obligations may be satisfied.
     fn check_impl_obligations(&self, span: Span, impl_def_id: ast::DefId,

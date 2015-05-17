@@ -1273,6 +1273,10 @@ impl<'a, 'tcx> resolve::ResolveCtxt<'a, 'tcx> for FnCtxt<'a, 'tcx> {
         predicates
     }
 
+    fn get_predicates(&self, did: ast::DefId) -> ty::GenericPredicates<'tcx> {
+        ty::lookup_predicates(self.tcx(), did)
+    }
+
     fn create_steps(&self, span: Span, self_ty: Ty<'tcx>, mode: probe::Mode)
                     -> Option<Vec<CandidateStep<'tcx>>> {
 
@@ -1368,6 +1372,10 @@ impl<'a, 'tcx> resolve::ResolveCtxt<'a, 'tcx> for FnCtxt<'a, 'tcx> {
         let substs = subst::Substs::new(type_vars, region_placeholders);
         let impl_ty = self.instantiate_type_scheme(span, &substs, &impl_pty.ty);
         (impl_ty, substs)
+    }
+
+    fn fast_impl_ty(&self, impl_def_id: ast::DefId) -> ty::TypeScheme<'tcx> {
+        ty::lookup_item_type(self.tcx(), impl_def_id)
     }
 
     fn check_impl_obligations(&self, span: Span, impl_def_id: ast::DefId,

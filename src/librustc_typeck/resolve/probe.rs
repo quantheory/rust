@@ -28,6 +28,7 @@ use syntax::codemap::{Span, DUMMY_SP};
 use std::collections::HashSet;
 use std::mem;
 use std::rc::Rc;
+use util::common::ErrorReported;
 use util::ppaux::Repr;
 
 use self::CandidateKind::*;
@@ -586,7 +587,15 @@ impl<'a,'tcx: 'a,R> ProbeContext<'a,'tcx,R>
                                                      item: ty::ImplOrTraitItem<'tcx>,
                                                      item_index: usize)
     {
-        let trait_def = ty::lookup_trait_def(self.tcx(), trait_def_id);
+        // `self.span` may be OK here, but we might have a better chance of
+        // identifying something that's part of the cycle if we had a span for
+        // the trait definition itself.
+        // FIXME: This function should return a `Result`.
+        let trait_def = match self.rcx.get_trait_def(self.span, trait_def_id) {
+            Ok(trait_def) => trait_def,
+            _ => self.tcx().sess.span_bug(self.span,
+                                          "unable to look up trait def for resolution")
+        };
 
         // FIXME(arielb1): can we use for_each_relevant_impl here?
         trait_def.for_each_impl(self.tcx(), |impl_def_id| {
@@ -632,7 +641,7 @@ impl<'a,'tcx: 'a,R> ProbeContext<'a,'tcx,R>
             None => { return true; }
         };
 
-        let impl_type = ty::lookup_item_type(self.tcx(), impl_def_id);
+        let impl_type = self.rcx.fast_impl_ty(impl_def_id);
         let impl_simplified_type =
             match fast_reject::simplify_type(self.tcx(), impl_type.ty, false) {
                 Some(simplified_type) => simplified_type,
@@ -658,7 +667,12 @@ impl<'a,'tcx: 'a,R> ProbeContext<'a,'tcx,R>
             // for the purposes of our method lookup, we only take
             // receiver type into account, so we can just substitute
             // fresh types here to use during substitution and subtyping.
-            let trait_def = ty::lookup_trait_def(self.tcx(), trait_def_id);
+            let trait_def = match self.rcx.get_trait_def(self.span, trait_def_id) {
+                Ok(trait_def) => trait_def,
+                Err(ErrorReported) => {
+                    return Err(ResolveError::CycleEncountered(trait_def_id));
+                }
+            };
             let substs = self.infcx().fresh_substs_for_trait(self.span,
                                                              &trait_def.generics,
                                                              step.self_ty);
@@ -701,8 +715,7 @@ impl<'a,'tcx: 'a,R> ProbeContext<'a,'tcx,R>
             debug!("assemble_projection_candidates: projection_trait_ref={}",
                    projection_trait_ref.repr(self.tcx()));
 
-            let trait_predicates = ty::lookup_predicates(self.tcx(),
-                                                         projection_trait_ref.def_id);
+            let trait_predicates = self.rcx.get_predicates(projection_trait_ref.def_id);
             let bounds = trait_predicates.instantiate(self.tcx(), projection_trait_ref.substs);
             let predicates = bounds.predicates.into_vec();
             debug!("assemble_projection_candidates: predicates={}",
@@ -808,6 +821,9 @@ impl<'a,'tcx: 'a,R> ProbeContext<'a,'tcx,R>
             Some(Err(ResolveError::ClosureAmbiguity(..))) => {
                 // this error only occurs when assembling candidates
                 tcx.sess.span_bug(span, "encountered ClosureAmbiguity from pick_core");
+            }
+            Some(err @ Err(ResolveError::CycleEncountered(..))) => {
+                return err;
             }
             None => vec![],
         };
