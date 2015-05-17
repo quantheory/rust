@@ -100,6 +100,8 @@ use middle::ty::{self, HasProjectionTypes, RegionEscape, ToPolyTraitRef, Ty};
 use middle::ty::liberate_late_bound_regions;
 use middle::ty::{MethodCall, MethodCallee, MethodMap, ObjectCastMap};
 use middle::ty_fold::{TypeFolder, TypeFoldable};
+use resolve::{self, ResolveCtxt, ResolveError};
+use resolve::probe::{self, CandidateStep};
 use rscope::RegionScope;
 use session::Session;
 use {CrateCtxt, lookup_full_def, require_same_types};
@@ -113,6 +115,7 @@ use util::lev_distance::lev_distance;
 use std::cell::{Cell, Ref, RefCell};
 use std::mem::replace;
 use std::iter::repeat;
+use std::rc::Rc;
 use std::slice;
 use syntax::{self, abi, attr};
 use syntax::attr::AttrMetaMethods;
@@ -1247,6 +1250,147 @@ impl<'a, 'tcx> AstConv<'tcx> for FnCtxt<'a, 'tcx> {
                     -> Ty<'tcx>
     {
         self.normalize_associated_type(span, trait_ref, item_name)
+    }
+}
+
+impl<'a, 'tcx> resolve::ResolveCtxt<'a, 'tcx> for FnCtxt<'a, 'tcx> {
+    fn ccx(&self) -> &CrateCtxt<'a, 'tcx> { self.ccx }
+
+    fn infcx(&self) -> &infer::InferCtxt<'a,'tcx> {
+        &self.inh.infcx
+    }
+
+    fn trait_predicates(&self) -> Vec<ty::Predicate<'tcx>> {
+        let mut predicates = vec![];
+        for predicate in &self.inh.param_env.caller_bounds {
+            match *predicate {
+                ty::Predicate::Trait(..) => {
+                    predicates.push(predicate.clone())
+                }
+                _ => {}
+            }
+        }
+        predicates
+    }
+
+    fn create_steps(&self, span: Span, self_ty: Ty<'tcx>, mode: probe::Mode)
+                    -> Option<Vec<CandidateStep<'tcx>>> {
+
+        if mode != probe::Mode::MethodCall {
+            let steps = vec![CandidateStep {
+                self_ty: self_ty,
+                autoderefs: 0,
+                unsize: false
+            }];
+            return Some(steps);
+        }
+
+        let mut steps = Vec::new();
+
+        let (final_ty, dereferences, _) = autoderef(self,
+                                                    span,
+                                                    self_ty,
+                                                    None,
+                                                    UnresolvedTypeAction::Error,
+                                                    NoPreference,
+                                                    |t, d| {
+            steps.push(CandidateStep {
+                self_ty: t,
+                autoderefs: d,
+                unsize: false
+            });
+            None::<()> // keep iterating until we can't anymore
+         });
+
+        match final_ty.sty {
+            ty::ty_vec(elem_ty, Some(_)) => {
+                let slice_ty = ty::mk_vec(self.tcx(), elem_ty, None);
+                steps.push(CandidateStep {
+                    self_ty: slice_ty,
+                    autoderefs: dereferences,
+                    unsize: true
+                });
+            }
+            ty::ty_err => return None,
+            _ => (),
+        }
+
+        Some(steps)
+    }
+
+    fn filter_closure_steps(&self, trait_def_id: ast::DefId,
+                            steps: Rc<Vec<CandidateStep<'tcx>>>)
+                            -> Result<Vec<CandidateStep<'tcx>>, ResolveError> {
+        let mut closure_steps = vec![];
+
+        // Check if this is one of the Fn,FnMut,FnOnce traits.
+        let tcx = self.tcx();
+        let kind = if Some(trait_def_id) == tcx.lang_items.fn_trait() {
+            ty::FnClosureKind
+        } else if Some(trait_def_id) == tcx.lang_items.fn_mut_trait() {
+            ty::FnMutClosureKind
+        } else if Some(trait_def_id) == tcx.lang_items.fn_once_trait() {
+            ty::FnOnceClosureKind
+        } else {
+            // Nothing to check, so return empty vec.
+            return Ok(closure_steps);
+        };
+
+        for step in &*steps {
+            if let ty::ty_closure(closure_def_id, _) = step.self_ty.sty {
+                let closure_kinds = self.inh.closure_kinds.borrow();
+                let closure_kind = match closure_kinds.get(&closure_def_id) {
+                    Some(&k) => k,
+                    None => {
+                        return Err(ResolveError::ClosureAmbiguity(trait_def_id));
+                    }
+                };
+                if closure_kind.extends(kind) {
+                    closure_steps.push((*step).clone())
+                }
+            }
+        }
+        Ok(closure_steps)
+    }
+
+    fn impl_ty_and_substs(&self, span: Span, impl_def_id: ast::DefId)
+                          -> (Ty<'tcx>, Substs<'tcx>) {
+        let impl_pty = ty::lookup_item_type(self.tcx(), impl_def_id);
+
+        let type_vars =
+            impl_pty.generics.types.map(
+                |_| self.infcx().next_ty_var());
+
+        let region_placeholders =
+            impl_pty.generics.regions.map(
+                |_| ty::ReStatic); // see erase_late_bound_regions() for an expl of why 'static
+
+        let substs = subst::Substs::new(type_vars, region_placeholders);
+        let impl_ty = self.instantiate_type_scheme(span, &substs, &impl_pty.ty);
+        (impl_ty, substs)
+    }
+
+    fn check_impl_obligations(&self, span: Span, impl_def_id: ast::DefId,
+                              substs: &Substs<'tcx>) -> bool {
+        let selcx = &mut traits::SelectionContext::new(self.infcx(), self);
+        let cause = traits::ObligationCause::misc(span, self.body_id);
+
+        // Check whether the impl imposes obligations we have to worry about.
+        let impl_bounds = ty::lookup_predicates(self.tcx(), impl_def_id);
+        let impl_bounds = impl_bounds.instantiate(self.tcx(), substs);
+        let traits::Normalized { value: impl_bounds,
+                                 obligations: norm_obligations } =
+            traits::normalize(selcx, cause.clone(), &impl_bounds);
+
+        // Convert the bounds into obligations.
+        let obligations = traits::predicates_for_generics(self.tcx(),
+                                                          cause.clone(),
+                                                          &impl_bounds);
+        debug!("impl_obligations={}", obligations.repr(self.tcx()));
+
+        // Evaluate those obligations to see if they might possibly hold.
+        obligations.all(|o| selcx.evaluate_obligation(o)) &&
+            norm_obligations.iter().all(|o| selcx.evaluate_obligation(o))
     }
 }
 
@@ -3806,7 +3950,7 @@ pub fn resolve_ty_and_def_ufcs<'a, 'b, 'tcx>(fcx: &FnCtxt<'b, 'tcx>,
                                                      &ty_segments[base_ty_end..]);
         let item_segment = path.segments.last().unwrap();
         let item_name = item_segment.identifier.name;
-        match method::resolve_ufcs(fcx, span, item_name, ty, node_id) {
+        match resolve::resolve_ufcs(fcx, span, item_name, ty, node_id) {
             Ok((def, lp)) => {
                 if have_disallowed_generic_consts(fcx, def, ty, span, node_id) {
                     return None;

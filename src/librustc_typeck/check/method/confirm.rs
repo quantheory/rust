@@ -8,8 +8,6 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use super::probe;
-
 use check::{self, FnCtxt, NoPreference, PreferMutLvalue, callee, demand};
 use check::UnresolvedTypeAction;
 use middle::mem_categorization::Typer;
@@ -21,6 +19,7 @@ use middle::ty::{MethodCall, MethodCallee, MethodObject, MethodOrigin,
 use middle::ty_fold::TypeFoldable;
 use middle::infer;
 use middle::infer::InferCtxt;
+use resolve::probe;
 use syntax::ast;
 use syntax::codemap::Span;
 use std::iter::repeat;

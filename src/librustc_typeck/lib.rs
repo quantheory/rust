@@ -123,6 +123,7 @@ mod astconv;
 mod collect;
 mod constrained_type_params;
 mod coherence;
+mod resolve;
 mod variance;
 
 pub struct TypeAndSubsts<'tcx> {
@@ -137,7 +138,7 @@ pub struct CrateCtxt<'a, 'tcx: 'a> {
     /// (i.e. including those from subcrates). This is used only for
     /// error reporting, and so is lazily initialised and generally
     /// shouldn't taint the common path (hence the RefCell).
-    all_traits: RefCell<Option<check::method::AllTraitsVec>>,
+    all_traits: RefCell<Option<resolve::suggest::AllTraitsVec>>,
     tcx: &'a ty::ctxt<'tcx>,
 }
 

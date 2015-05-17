@@ -12,49 +12,23 @@
 
 use astconv::AstConv;
 use check::FnCtxt;
-use middle::def;
-use middle::privacy::{AllPublic, DependsOn, LastPrivate, LastMod};
 use middle::subst;
 use middle::traits;
 use middle::ty::{self, AsPredicate, ToPolyTraitRef};
 use middle::infer;
+use resolve::{probe, ResolveError};
+use resolve::ResolveError::*;
+
 use util::ppaux::Repr;
 
 use syntax::ast::DefId;
 use syntax::ast;
 use syntax::codemap::Span;
 
-pub use self::MethodError::*;
-pub use self::CandidateSource::*;
-
-pub use self::suggest::{report_error, AllTraitsVec};
+pub use self::suggest::report_error;
 
 mod confirm;
-mod probe;
 mod suggest;
-
-pub enum MethodError {
-    // Did not find an applicable method, but we did find various
-    // static methods that may apply, as well as a list of
-    // not-in-scope traits which may work.
-    NoMatch(Vec<CandidateSource>, Vec<ast::DefId>, probe::Mode),
-
-    // Multiple methods might apply.
-    Ambiguity(Vec<CandidateSource>),
-
-    // Using a `Fn`/`FnMut`/etc method on a raw closure type before we have inferred its kind.
-    ClosureAmbiguity(/* DefId of fn trait */ ast::DefId),
-}
-
-// A pared down enum describing just the places from which a method
-// candidate can arise. Used for error reporting only.
-#[derive(Copy, Clone, PartialOrd, Ord, PartialEq, Eq)]
-pub enum CandidateSource {
-    ImplSource(ast::DefId),
-    TraitSource(/* trait id */ ast::DefId),
-}
-
-type ItemIndex = usize; // just for doc purposes
 
 /// Determines whether the type `self_ty` supports a method name `method_name` or not.
 pub fn exists<'a, 'tcx>(fcx: &FnCtxt<'a, 'tcx>,
@@ -94,7 +68,7 @@ pub fn lookup<'a, 'tcx>(fcx: &FnCtxt<'a, 'tcx>,
                         supplied_method_types: Vec<ty::Ty<'tcx>>,
                         call_expr: &'tcx ast::Expr,
                         self_expr: &'tcx ast::Expr)
-                        -> Result<ty::MethodCallee<'tcx>, MethodError>
+                        -> Result<ty::MethodCallee<'tcx>, ResolveError>
 {
     debug!("lookup(method_name={}, self_ty={}, call_expr={}, self_expr={})",
            method_name.repr(fcx.tcx()),
@@ -300,37 +274,6 @@ pub fn lookup_in_trait_adjusted<'a, 'tcx>(fcx: &FnCtxt<'a, 'tcx>,
 
     Some(callee)
 }
-
-pub fn resolve_ufcs<'a, 'tcx>(fcx: &FnCtxt<'a, 'tcx>,
-                              span: Span,
-                              method_name: ast::Name,
-                              self_ty: ty::Ty<'tcx>,
-                              expr_id: ast::NodeId)
-                              -> Result<(def::Def, LastPrivate), MethodError>
-{
-    let mode = probe::Mode::Path;
-    let pick = try!(probe::probe(fcx, span, mode, method_name, self_ty, expr_id));
-    let def_id = pick.item.def_id();
-    let mut lp = LastMod(AllPublic);
-    let provenance = match pick.kind {
-        probe::InherentImplPick(impl_def_id) => {
-            if pick.item.vis() != ast::Public {
-                lp = LastMod(DependsOn(def_id));
-            }
-            def::FromImpl(impl_def_id)
-        }
-        _ => def::FromTrait(pick.item.container().id())
-    };
-    let def_result = match pick.item {
-        ty::ImplOrTraitItem::MethodTraitItem(..) => def::DefMethod(def_id, provenance),
-        ty::ImplOrTraitItem::ConstTraitItem(..) => def::DefAssociatedConst(def_id, provenance),
-        ty::ImplOrTraitItem::TypeTraitItem(..) => {
-            fcx.tcx().sess.span_bug(span, "resolve_ufcs: probe picked associated type");
-        }
-    };
-    Ok((def_result, lp))
-}
-
 
 /// Find item with name `item_name` defined in `trait_def_id` and return it, along with its
 /// index (or `None`, if no such item).
