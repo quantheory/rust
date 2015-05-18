@@ -111,7 +111,7 @@ use syntax::print::pprust::*;
 use syntax::{ast, ast_map, abi};
 use syntax::ast_util::local_def;
 
-use std::cell::RefCell;
+pub use collect::CrateCtxt;
 
 // NB: This module needs to be declared first so diagnostics are
 // registered before they are used.
@@ -129,17 +129,6 @@ mod variance;
 pub struct TypeAndSubsts<'tcx> {
     pub substs: subst::Substs<'tcx>,
     pub ty: Ty<'tcx>,
-}
-
-pub struct CrateCtxt<'a, 'tcx: 'a> {
-    // A mapping from method call sites to traits that have that method.
-    trait_map: ty::TraitMap,
-    /// A vector of every trait accessible in the whole crate
-    /// (i.e. including those from subcrates). This is used only for
-    /// error reporting, and so is lazily initialised and generally
-    /// shouldn't taint the common path (hence the RefCell).
-    all_traits: RefCell<Option<resolve::suggest::AllTraitsVec>>,
-    tcx: &'a ty::ctxt<'tcx>,
 }
 
 // Functions that write types into the node type table
@@ -319,14 +308,10 @@ fn check_for_entry_fn(ccx: &CrateCtxt) {
 
 pub fn check_crate(tcx: &ty::ctxt, trait_map: ty::TraitMap) {
     let time_passes = tcx.sess.time_passes();
-    let ccx = CrateCtxt {
-        trait_map: trait_map,
-        all_traits: RefCell::new(None),
-        tcx: tcx
-    };
+    let ccx = CrateCtxt::new(tcx, trait_map);
 
     time(time_passes, "type collecting", (), |_|
-         collect::collect_item_types(tcx));
+         collect::collect_item_types(&ccx));
 
     // this ensures that later parts of type checking can assume that items
     // have valid types and not error

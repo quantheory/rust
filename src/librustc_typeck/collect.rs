@@ -76,6 +76,7 @@ use middle::ty::{AsPredicate, ImplContainer, ImplOrTraitItemContainer, TraitCont
 use middle::ty::{self, RegionEscape, ToPolyTraitRef, Ty, TypeScheme};
 use middle::ty_fold::{self, TypeFolder, TypeFoldable};
 use middle::infer;
+use resolve;
 use rscope::*;
 use util::common::{ErrorReported, memoized};
 use util::nodemap::{FnvHashMap, FnvHashSet};
@@ -100,9 +101,7 @@ use syntax::visit;
 ///////////////////////////////////////////////////////////////////////////
 // Main entry point
 
-pub fn collect_item_types(tcx: &ty::ctxt) {
-    let ccx = &CrateCtxt { tcx: tcx, stack: RefCell::new(Vec::new()) };
-
+pub fn collect_item_types(ccx: &CrateCtxt) {
     let mut visitor = CollectTraitDefVisitor{ ccx: ccx };
     visit::walk_crate(&mut visitor, ccx.tcx.map.krate());
 
@@ -112,12 +111,21 @@ pub fn collect_item_types(tcx: &ty::ctxt) {
 
 ///////////////////////////////////////////////////////////////////////////
 
-struct CrateCtxt<'a,'tcx:'a> {
-    tcx: &'a ty::ctxt<'tcx>,
+pub struct CrateCtxt<'a,'tcx:'a> {
+    pub tcx: &'a ty::ctxt<'tcx>,
 
     // This stack is used to identify cycles in the user's source.
     // Note that these cycles can cross multiple items.
     stack: RefCell<Vec<AstConvRequest>>,
+
+    // A mapping from method call sites to traits that have that method.
+    pub trait_map: ty::TraitMap,
+
+    /// A vector of every trait accessible in the whole crate
+    /// (i.e. including those from subcrates). This is used only for
+    /// error reporting, and so is lazily initialised and generally
+    /// shouldn't taint the common path (hence the RefCell).
+    pub all_traits: RefCell<Option<resolve::suggest::AllTraitsVec>>,
 }
 
 /// Context specific to some particular item. This is what implements
@@ -189,6 +197,16 @@ impl<'a, 'tcx, 'v> visit::Visitor<'v> for CollectItemTypesVisitor<'a, 'tcx> {
 // Utility types and common code for the above passes.
 
 impl<'a,'tcx> CrateCtxt<'a,'tcx> {
+    pub fn new(tcx: &'a ty::ctxt<'tcx>, trait_map: ty::TraitMap)
+           -> CrateCtxt<'a, 'tcx> {
+        CrateCtxt {
+            tcx: tcx,
+            stack: RefCell::new(Vec::new()),
+            trait_map: trait_map,
+            all_traits: RefCell::new(None),
+        }
+    }
+
     fn icx(&'a self, param_bounds: &'a GetTypeParameterBounds<'tcx>) -> ItemCtxt<'a,'tcx> {
         ItemCtxt { ccx: self, param_bounds: param_bounds }
     }
