@@ -100,7 +100,7 @@ use middle::ty::{self, HasProjectionTypes, RegionEscape, ToPolyTraitRef, Ty};
 use middle::ty::liberate_late_bound_regions;
 use middle::ty::{MethodCall, MethodCallee, MethodMap, ObjectCastMap};
 use middle::ty_fold::{TypeFolder, TypeFoldable};
-use resolve::{self, ResolveCtxt, ResolveError};
+use resolve::{self, ResolveError};
 use resolve::probe::{self, CandidateStep};
 use rscope::RegionScope;
 use session::Session;
@@ -1165,8 +1165,13 @@ fn report_cast_to_unsized_type<'a, 'tcx>(fcx: &FnCtxt<'a, 'tcx>,
 }
 
 
-impl<'a, 'tcx> AstConv<'tcx> for FnCtxt<'a, 'tcx> {
-    fn tcx(&self) -> &ty::ctxt<'tcx> { self.ccx.tcx }
+impl<'a, 'tcx: 'a> AstConv<'a, 'tcx> for FnCtxt<'a, 'tcx> {
+
+    fn ccx(&self) -> &CrateCtxt<'a, 'tcx> { self.ccx }
+
+    fn infcx(&self) -> &infer::InferCtxt<'a,'tcx> {
+        &self.inh.infcx
+    }
 
     fn get_item_type_scheme(&self, _: Span, id: ast::DefId)
                             -> Result<ty::TypeScheme<'tcx>, ErrorReported>
@@ -1250,14 +1255,6 @@ impl<'a, 'tcx> AstConv<'tcx> for FnCtxt<'a, 'tcx> {
                     -> Ty<'tcx>
     {
         self.normalize_associated_type(span, trait_ref, item_name)
-    }
-}
-
-impl<'a, 'tcx> resolve::ResolveCtxt<'a, 'tcx> for FnCtxt<'a, 'tcx> {
-    fn ccx(&self) -> &CrateCtxt<'a, 'tcx> { self.ccx }
-
-    fn infcx(&self) -> &infer::InferCtxt<'a,'tcx> {
-        &self.inh.infcx
     }
 
     fn all_bound_predicates(&self) -> Vec<ty::Predicate<'tcx>> {

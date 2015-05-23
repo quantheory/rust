@@ -142,7 +142,7 @@ pub struct CrateCtxt<'a,'tcx:'a> {
 /// or both (a tuple).
 struct ItemCtxt<'a,'tcx:'a> {
     ccx: &'a CrateCtxt<'a,'tcx>,
-    param_bounds: &'a (GetTypeParameterBounds<'tcx>+'a),
+    param_bounds: &'a (GetTypeParameterBounds<'a, 'tcx>+'a),
     infcx: infer::InferCtxt<'a, 'tcx>,
 }
 
@@ -209,7 +209,7 @@ impl<'a,'tcx> CrateCtxt<'a,'tcx> {
         }
     }
 
-    fn icx(&'a self, param_bounds: &'a GetTypeParameterBounds<'tcx>) -> ItemCtxt<'a,'tcx> {
+    fn icx(&'a self, param_bounds: &'a GetTypeParameterBounds<'a, 'tcx>) -> ItemCtxt<'a,'tcx> {
         ItemCtxt {
             ccx: self,
             param_bounds: param_bounds,
@@ -373,8 +373,13 @@ impl<'a,'tcx> ItemCtxt<'a,'tcx> {
     }
 }
 
-impl<'a, 'tcx> AstConv<'tcx> for ItemCtxt<'a, 'tcx> {
-    fn tcx(&self) -> &ty::ctxt<'tcx> { self.ccx.tcx }
+impl<'a, 'tcx: 'a> AstConv<'a, 'tcx> for ItemCtxt<'a, 'tcx> {
+
+    fn ccx(&self) -> &CrateCtxt<'a, 'tcx> { self.ccx }
+
+    fn infcx(&self) -> &infer::InferCtxt<'a, 'tcx> {
+        &self.infcx
+    }
 
     fn get_item_type_scheme(&self, span: Span, id: ast::DefId)
                             -> Result<ty::TypeScheme<'tcx>, ErrorReported>
@@ -445,15 +450,7 @@ impl<'a, 'tcx> AstConv<'tcx> for ItemCtxt<'a, 'tcx> {
     {
         ty::mk_projection(self.tcx(), trait_ref, item_name)
     }
-}
 
-impl<'a, 'tcx> resolve::ResolveCtxt<'a, 'tcx> for ItemCtxt<'a, 'tcx> {
-    fn ccx(&self) -> &CrateCtxt<'a, 'tcx> {
-        self.ccx
-    }
-    fn infcx(&self) -> &infer::InferCtxt<'a, 'tcx> {
-        &self.infcx
-    }
     fn all_bound_predicates(&self) -> Vec<ty::Predicate<'tcx>> {
         let mut predicates = vec![];
         for predicate in &self.param_bounds.possible_trait_predicates(self) {
@@ -466,12 +463,14 @@ impl<'a, 'tcx> resolve::ResolveCtxt<'a, 'tcx> for ItemCtxt<'a, 'tcx> {
         }
         predicates
     }
+
     fn trait_predicates(&self, did: ast::DefId) -> ty::GenericPredicates<'tcx> {
         // SPS: This is broken, but we probably need some more work to be able
         // to handle traits that haven't been converted yet, without causing
         // spurious cycles.
         ty::lookup_predicates(self.tcx(), did)
     }
+
     fn create_steps(&self, span: Span, self_ty: Ty<'tcx>, mode: probe::Mode)
                     -> Option<Vec<probe::CandidateStep<'tcx>>> {
         if mode == probe::Mode::MethodCall {
@@ -484,6 +483,7 @@ impl<'a, 'tcx> resolve::ResolveCtxt<'a, 'tcx> for ItemCtxt<'a, 'tcx> {
             unsize: false
         }])
     }
+
     fn filter_closure_steps(&self, _trait_def_id: ast::DefId,
                             _steps: Rc<Vec<probe::CandidateStep<'tcx>>>)
                             -> Result<Vec<probe::CandidateStep<'tcx>>,
@@ -491,6 +491,7 @@ impl<'a, 'tcx> resolve::ResolveCtxt<'a, 'tcx> for ItemCtxt<'a, 'tcx> {
         // There are no closures yet, so we don't have to do anything here.
         Ok(Vec::new())
     }
+
     fn impl_ty_and_substs(&self, _span: Span, impl_def_id: ast::DefId)
                           -> (Ty<'tcx>, Substs<'tcx>) {
         // SPS: Again, broken.
@@ -511,10 +512,12 @@ impl<'a, 'tcx> resolve::ResolveCtxt<'a, 'tcx> for ItemCtxt<'a, 'tcx> {
         let impl_ty = impl_pty.ty.subst(self.tcx(), &substs);
         (impl_ty, substs)
     }
+
     fn fast_impl_ty(&self, impl_def_id: ast::DefId) -> ty::TypeScheme<'tcx> {
         // SPS: Broken broken broken.
         ty::lookup_item_type(self.tcx(), impl_def_id)
     }
+
     fn check_impl_obligations(&self, _span: Span, _impl_def_id: ast::DefId,
                               _substs: &Substs<'tcx>) -> bool {
         // SPS: Actually implementing this would probably be a good idea.
@@ -524,22 +527,23 @@ impl<'a, 'tcx> resolve::ResolveCtxt<'a, 'tcx> for ItemCtxt<'a, 'tcx> {
 
 /// Interface used to find the bounds on a type parameter from within
 /// an `ItemCtxt`. This allows us to use multiple kinds of sources.
-trait GetTypeParameterBounds<'tcx> {
+trait GetTypeParameterBounds<'a, 'tcx> {
     fn possible_trait_predicates(&self,
-                                 astconv: &AstConv<'tcx>)
+                                 astconv: &AstConv<'a, 'tcx>)
                                  -> Vec<ty::Predicate<'tcx>>;
     fn get_type_parameter_bounds(&self,
-                                 astconv: &AstConv<'tcx>,
+                                 astconv: &AstConv<'a, 'tcx>,
                                  node_id: ast::NodeId)
                                  -> Vec<ty::Predicate<'tcx>>;
 }
 
 /// Find bounds from both elements of the tuple.
-impl<'a,'b,'tcx,A,B> GetTypeParameterBounds<'tcx> for (&'a A,&'b B)
-    where A : GetTypeParameterBounds<'tcx>, B : GetTypeParameterBounds<'tcx>
+impl<'a, 'aa,'bb,'tcx,A,B> GetTypeParameterBounds<'a, 'tcx> for (&'aa A,&'bb B)
+    where A : GetTypeParameterBounds<'a, 'tcx>,
+          B : GetTypeParameterBounds<'a, 'tcx>,
 {
     fn possible_trait_predicates(&self,
-                                 astconv: &AstConv<'tcx>)
+                                 astconv: &AstConv<'a, 'tcx>)
                                  -> Vec<ty::Predicate<'tcx>>
     {
         let mut v = self.0.possible_trait_predicates(astconv);
@@ -547,7 +551,7 @@ impl<'a,'b,'tcx,A,B> GetTypeParameterBounds<'tcx> for (&'a A,&'b B)
         v
     }
     fn get_type_parameter_bounds(&self,
-                                 astconv: &AstConv<'tcx>,
+                                 astconv: &AstConv<'a, 'tcx>,
                                  node_id: ast::NodeId)
                                  -> Vec<ty::Predicate<'tcx>>
     {
@@ -558,15 +562,15 @@ impl<'a,'b,'tcx,A,B> GetTypeParameterBounds<'tcx> for (&'a A,&'b B)
 }
 
 /// Empty set of bounds.
-impl<'tcx> GetTypeParameterBounds<'tcx> for () {
+impl<'a, 'tcx> GetTypeParameterBounds<'a, 'tcx> for () {
     fn possible_trait_predicates(&self,
-                                 _astconv: &AstConv<'tcx>)
+                                 _astconv: &AstConv<'a, 'tcx>)
                                  -> Vec<ty::Predicate<'tcx>>
     {
         Vec::new()
     }
     fn get_type_parameter_bounds(&self,
-                                 _astconv: &AstConv<'tcx>,
+                                 _astconv: &AstConv<'a, 'tcx>,
                                  _node_id: ast::NodeId)
                                  -> Vec<ty::Predicate<'tcx>>
     {
@@ -577,15 +581,15 @@ impl<'tcx> GetTypeParameterBounds<'tcx> for () {
 /// Find bounds from the parsed and converted predicates.  This is
 /// used when converting methods, because by that time the predicates
 /// from the trait/impl have been fully converted.
-impl<'tcx> GetTypeParameterBounds<'tcx> for ty::GenericPredicates<'tcx> {
+impl<'a, 'tcx: 'a> GetTypeParameterBounds<'a, 'tcx> for ty::GenericPredicates<'tcx> {
     fn possible_trait_predicates(&self,
-                                 _astconv: &AstConv<'tcx>)
+                                 _astconv: &AstConv<'a, 'tcx>)
                                  -> Vec<ty::Predicate<'tcx>>
     {
         self.predicates.clone().into_vec()
     }
     fn get_type_parameter_bounds(&self,
-                                 astconv: &AstConv<'tcx>,
+                                 astconv: &AstConv<'a, 'tcx>,
                                  node_id: ast::NodeId)
                                  -> Vec<ty::Predicate<'tcx>>
     {
@@ -617,9 +621,9 @@ impl<'tcx> GetTypeParameterBounds<'tcx> for ty::GenericPredicates<'tcx> {
 /// AST. We do this to avoid having to convert *all* the bounds, which
 /// would create artificial cycles. Instead we can only convert the
 /// bounds for those a type parameter `X` if `X::Foo` is used.
-impl<'tcx> GetTypeParameterBounds<'tcx> for ast::Generics {
+impl<'a, 'tcx: 'a> GetTypeParameterBounds<'a, 'tcx> for ast::Generics {
     fn possible_trait_predicates(&self,
-                                 astconv: &AstConv<'tcx>)
+                                 astconv: &AstConv<'a, 'tcx>)
                                  -> Vec<ty::Predicate<'tcx>>
     {
         // In the AST, bounds can derive from two places. Either
@@ -670,7 +674,7 @@ impl<'tcx> GetTypeParameterBounds<'tcx> for ast::Generics {
         from_ty_params.chain(from_where_clauses).collect()
     }
     fn get_type_parameter_bounds(&self,
-                                 astconv: &AstConv<'tcx>,
+                                 astconv: &AstConv<'a, 'tcx>,
                                  node_id: ast::NodeId)
                                  -> Vec<ty::Predicate<'tcx>>
     {
@@ -1829,10 +1833,10 @@ fn ty_generic_predicates_for_fn<'a,'tcx>(ccx: &CrateCtxt<'a,'tcx>,
 }
 
 // Add the Sized bound, unless the type parameter is marked as `?Sized`.
-fn add_unsized_bound<'tcx>(astconv: &AstConv<'tcx>,
-                           bounds: &mut ty::BuiltinBounds,
-                           ast_bounds: &[ast::TyParamBound],
-                           span: Span)
+fn add_unsized_bound<'a, 'tcx: 'a>(astconv: &AstConv<'a, 'tcx>,
+                                   bounds: &mut ty::BuiltinBounds,
+                                   ast_bounds: &[ast::TyParamBound],
+                                   span: Span)
 {
     let tcx = astconv.tcx();
 
@@ -2150,12 +2154,12 @@ enum SizedByDefault { Yes, No, }
 /// Translate the AST's notion of ty param bounds (which are an enum consisting of a newtyped Ty or
 /// a region) to ty's notion of ty param bounds, which can either be user-defined traits, or the
 /// built-in trait (formerly known as kind): Send.
-fn compute_bounds<'tcx>(astconv: &AstConv<'tcx>,
-                        param_ty: ty::Ty<'tcx>,
-                        ast_bounds: &[ast::TyParamBound],
-                        sized_by_default: SizedByDefault,
-                        span: Span)
-                        -> ty::ParamBounds<'tcx>
+fn compute_bounds<'a, 'tcx: 'a>(astconv: &AstConv<'a, 'tcx>,
+                                param_ty: ty::Ty<'tcx>,
+                                ast_bounds: &[ast::TyParamBound],
+                                sized_by_default: SizedByDefault,
+                                span: Span)
+                                -> ty::ParamBounds<'tcx>
 {
     let mut param_bounds = conv_param_bounds(astconv,
                                              span,
@@ -2179,10 +2183,10 @@ fn compute_bounds<'tcx>(astconv: &AstConv<'tcx>,
 /// because this can be anywhere from 0 predicates (`T:?Sized` adds no
 /// predicates) to 1 (`T:Foo`) to many (`T:Bar<X=i32>` adds `T:Bar`
 /// and `<T as Bar>::X == i32`).
-fn predicates_from_bound<'tcx>(astconv: &AstConv<'tcx>,
-                               param_ty: Ty<'tcx>,
-                               bound: &ast::TyParamBound)
-                               -> Vec<ty::Predicate<'tcx>>
+fn predicates_from_bound<'a, 'tcx: 'a>(astconv: &AstConv<'a, 'tcx>,
+                                       param_ty: Ty<'tcx>,
+                                       bound: &ast::TyParamBound)
+                                       -> Vec<ty::Predicate<'tcx>>
 {
     match *bound {
         ast::TraitTyParamBound(ref tr, ast::TraitBoundModifier::None) => {
@@ -2204,11 +2208,11 @@ fn predicates_from_bound<'tcx>(astconv: &AstConv<'tcx>,
     }
 }
 
-fn conv_poly_trait_ref<'tcx>(astconv: &AstConv<'tcx>,
-                             param_ty: Ty<'tcx>,
-                             trait_ref: &ast::PolyTraitRef,
-                             projections: &mut Vec<ty::PolyProjectionPredicate<'tcx>>)
-                             -> ty::PolyTraitRef<'tcx>
+fn conv_poly_trait_ref<'a, 'tcx: 'a>(astconv: &AstConv<'a, 'tcx>,
+                                     param_ty: Ty<'tcx>,
+                                     trait_ref: &ast::PolyTraitRef,
+                                     projections: &mut Vec<ty::PolyProjectionPredicate<'tcx>>)
+                                     -> ty::PolyTraitRef<'tcx>
 {
     astconv::instantiate_poly_trait_ref(astconv,
                                         &ExplicitRscope,
@@ -2217,11 +2221,11 @@ fn conv_poly_trait_ref<'tcx>(astconv: &AstConv<'tcx>,
                                         projections)
 }
 
-fn conv_param_bounds<'a,'tcx>(astconv: &AstConv<'tcx>,
-                              span: Span,
-                              param_ty: ty::Ty<'tcx>,
-                              ast_bounds: &[ast::TyParamBound])
-                              -> ty::ParamBounds<'tcx>
+fn conv_param_bounds<'a,'tcx: 'a>(astconv: &AstConv<'a,'tcx>,
+                                  span: Span,
+                                  param_ty: ty::Ty<'tcx>,
+                                  ast_bounds: &[ast::TyParamBound])
+                                  -> ty::ParamBounds<'tcx>
 {
     let tcx = astconv.tcx();
     let astconv::PartitionedBounds {

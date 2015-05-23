@@ -12,18 +12,12 @@
 //! because they require trait lookup. UFCS <T>::Foo and T::Foo are handled
 //! here, and `probe` is also used for method calls.
 
-use super::CrateCtxt;
-
 use astconv::AstConv;
 use middle::def;
-use middle::infer;
 use middle::privacy::{AllPublic, DependsOn, LastPrivate, LastMod};
-use middle::subst;
-use middle::ty::{self, ImplOrTraitItem, Ty};
+use middle::ty::{ImplOrTraitItem, Ty};
 use syntax::ast;
 use syntax::codemap::Span;
-
-use std::rc::Rc;
 
 pub use self::ResolveError::*;
 
@@ -56,54 +50,13 @@ pub enum CandidateSource {
 
 type ItemIndex = usize; // just for doc purposes
 
-// Abstraction handling the difference between `collect` and later stages.
-// This is slightly embarrassing in that several of these functions really
-// don't make sense for `collect` anyway, but are needed in function bodies
-// nonetheless.
-pub trait ResolveCtxt<'a, 'tcx>: AstConv<'tcx> {
-    fn ccx(&self) -> &CrateCtxt<'a, 'tcx>;
-
-    fn infcx(&self) -> &infer::InferCtxt<'a, 'tcx>;
-
-    // Return copies of any predicates which constrain type parameters in the
-    // current scope to implement specific traits.
-    fn all_bound_predicates(&self) -> Vec<ty::Predicate<'tcx>>;
-
-    // Return the predicates on a specific trait.
-    fn trait_predicates(&self, did: ast::DefId) -> ty::GenericPredicates<'tcx>;
-
-    // Create the steps for a method call, or the single "step" for UFCS
-    // resolution.
-    fn create_steps(&self, span: Span, self_ty: Ty<'tcx>, mode: probe::Mode)
-                    -> Option<Vec<probe::CandidateStep<'tcx>>>;
-
-    // If the trait given is a `Fn` trait, pick out matching closures in the
-    // vector of steps.
-    fn filter_closure_steps(&self, trait_def_id: ast::DefId,
-                            steps: Rc<Vec<probe::CandidateStep<'tcx>>>)
-                            -> Result<Vec<probe::CandidateStep<'tcx>>, ResolveError>;
-
-    // Get the type of an impl and generate substitutions with placeholders.
-    // The type is expected to have any associated types normalized.
-    fn impl_ty_and_substs(&self, span: Span, impl_def_id: ast::DefId)
-                          -> (Ty<'tcx>, subst::Substs<'tcx>);
-
-    // Get a type by just looking it up if possible, used for weeding
-    // out bad candidates with `fast_reject`.
-    fn fast_impl_ty(&self, impl_def_id: ast::DefId) -> ty::TypeScheme<'tcx>;
-
-    // Within this context, check that obligations may be satisfied.
-    fn check_impl_obligations(&self, span: Span, impl_def_id: ast::DefId,
-                              substs: &subst::Substs<'tcx>) -> bool;
-}
-
 pub fn resolve_ufcs<'a, 'tcx: 'a, T>(rcx: &'a T,
                                      span: Span,
                                      item_name: ast::Name,
                                      self_ty: Ty<'tcx>,
                                      expr_id: ast::NodeId)
                                      -> Result<(def::Def, LastPrivate), ResolveError>
-    where T: ResolveCtxt<'a, 'tcx> + 'a
+    where T: AstConv<'a, 'tcx> + 'a
 {
     let mode = probe::Mode::Path;
     let pick = try!(probe::probe(rcx, span, mode, item_name, self_ty, expr_id));

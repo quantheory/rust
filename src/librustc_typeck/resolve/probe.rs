@@ -8,7 +8,6 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use super::ResolveCtxt;
 use super::ResolveError;
 use super::ItemIndex;
 use super::CandidateSource::{self, ImplSource, TraitSource};
@@ -35,7 +34,7 @@ use self::CandidateKind::*;
 pub use self::PickKind::*;
 
 struct ProbeContext<'a, 'tcx: 'a, R>
-        where R: ResolveCtxt<'a, 'tcx> + 'a {
+        where R: AstConv<'a, 'tcx> + 'a {
     rcx: &'a R,
     span: Span,
     mode: Mode,
@@ -123,7 +122,7 @@ pub fn probe<'a, 'tcx: 'a, R>(rcx: &'a R,
                               self_ty: Ty<'tcx>,
                               scope_expr_id: ast::NodeId)
                               -> PickResult<'tcx>
-    where R: ResolveCtxt<'a, 'tcx> + 'a
+    where R: AstConv<'a, 'tcx> + 'a
 {
     debug!("probe(self_ty={}, item_name={}, scope_expr_id={})",
            self_ty.repr(rcx.tcx()),
@@ -177,7 +176,7 @@ pub fn probe<'a, 'tcx: 'a, R>(rcx: &'a R,
 }
 
 impl<'a,'tcx: 'a,R> ProbeContext<'a,'tcx,R>
-      where R: ResolveCtxt<'a, 'tcx> + 'a {
+      where R: AstConv<'a, 'tcx> + 'a {
     fn new(rcx: &'a R,
            span: Span,
            mode: Mode,
@@ -432,7 +431,7 @@ impl<'a,'tcx: 'a,R> ProbeContext<'a,'tcx,R>
                     ty::Predicate::TypeOutlives(..) => {
                         self.rcx.tcx().sess
                             .span_bug(self.span,
-                                      "`ResolveCtxt::all_bound_predicates` \
+                                      "`AstConv::all_bound_predicates` \
                                        returned non-trait predicate")
                     }
                 }
