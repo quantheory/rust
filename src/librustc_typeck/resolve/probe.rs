@@ -414,7 +414,7 @@ impl<'a,'tcx: 'a,R> ProbeContext<'a,'tcx,R>
         // FIXME -- Do we want to commit to this behavior for param bounds?
 
         let bounds: Vec<_> =
-            self.rcx.trait_predicates()
+            self.rcx.all_bound_predicates()
             .iter()
             .filter_map(|predicate| {
                 match *predicate {
@@ -432,8 +432,8 @@ impl<'a,'tcx: 'a,R> ProbeContext<'a,'tcx,R>
                     ty::Predicate::TypeOutlives(..) => {
                         self.rcx.tcx().sess
                             .span_bug(self.span,
-                                      "`ResolveCtxt::trait_predicates` returned \
-                                       non-trait predicate")
+                                      "`ResolveCtxt::all_bound_predicates` \
+                                       returned non-trait predicate")
                     }
                 }
             })
@@ -715,7 +715,7 @@ impl<'a,'tcx: 'a,R> ProbeContext<'a,'tcx,R>
             debug!("assemble_projection_candidates: projection_trait_ref={}",
                    projection_trait_ref.repr(self.tcx()));
 
-            let trait_predicates = self.rcx.get_predicates(projection_trait_ref.def_id);
+            let trait_predicates = self.rcx.trait_predicates(projection_trait_ref.def_id);
             let bounds = trait_predicates.instantiate(self.tcx(), projection_trait_ref.substs);
             let predicates = bounds.predicates.into_vec();
             debug!("assemble_projection_candidates: predicates={}",
@@ -758,7 +758,7 @@ impl<'a,'tcx: 'a,R> ProbeContext<'a,'tcx,R>
         debug!("assemble_where_clause_candidates(trait_def_id={})",
                trait_def_id.repr(self.tcx()));
 
-        let caller_predicates = self.rcx.trait_predicates();
+        let caller_predicates = self.rcx.all_bound_predicates();
         for poly_bound in traits::elaborate_predicates(self.tcx(), caller_predicates)
                           .filter_map(|p| p.to_opt_poly_trait_ref())
                           .filter(|b| b.def_id() == trait_def_id)

@@ -71,12 +71,11 @@ use middle::lang_items::SizedTraitLangItem;
 use middle::free_region::FreeRegionMap;
 use middle::region;
 use middle::resolve_lifetime;
-use middle::subst::{Substs, FnSpace, ParamSpace, SelfSpace, TypeSpace, VecPerParamSpace};
+use middle::subst::{Subst, Substs, FnSpace, ParamSpace, SelfSpace, TypeSpace, VecPerParamSpace};
 use middle::ty::{AsPredicate, ImplContainer, ImplOrTraitItemContainer, TraitContainer};
 use middle::ty::{self, RegionEscape, ToPolyTraitRef, Ty, TypeScheme};
 use middle::ty_fold::{self, TypeFolder, TypeFoldable};
 use middle::infer;
-use resolve;
 use rscope::*;
 use util::common::{ErrorReported, memoized};
 use util::nodemap::{FnvHashMap, FnvHashSet};
@@ -91,12 +90,14 @@ use std::rc::Rc;
 use syntax::abi;
 use syntax::ast;
 use syntax::ast_map;
-use syntax::ast_util::local_def;
+use syntax::ast_util::{is_local, local_def};
 use syntax::codemap::Span;
 use syntax::parse::token::special_idents;
 use syntax::parse::token;
 use syntax::ptr::P;
 use syntax::visit;
+
+use resolve::{self, probe};
 
 ///////////////////////////////////////////////////////////////////////////
 // Main entry point
@@ -142,6 +143,7 @@ pub struct CrateCtxt<'a,'tcx:'a> {
 struct ItemCtxt<'a,'tcx:'a> {
     ccx: &'a CrateCtxt<'a,'tcx>,
     param_bounds: &'a (GetTypeParameterBounds<'tcx>+'a),
+    infcx: infer::InferCtxt<'a, 'tcx>,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq)]
@@ -208,7 +210,11 @@ impl<'a,'tcx> CrateCtxt<'a,'tcx> {
     }
 
     fn icx(&'a self, param_bounds: &'a GetTypeParameterBounds<'tcx>) -> ItemCtxt<'a,'tcx> {
-        ItemCtxt { ccx: self, param_bounds: param_bounds }
+        ItemCtxt {
+            ccx: self,
+            param_bounds: param_bounds,
+            infcx: infer::new_infer_ctxt(self.tcx),
+        }
     }
 
     fn method_ty(&self, method_id: ast::NodeId) -> Rc<ty::Method<'tcx>> {
@@ -331,7 +337,7 @@ impl<'a,'tcx> CrateCtxt<'a,'tcx> {
     {
         let tcx = self.tcx;
 
-        if trait_id.krate != ast::LOCAL_CRATE {
+        if !is_local(trait_id) {
             return ty::lookup_trait_def(tcx, trait_id)
         }
 
@@ -404,7 +410,7 @@ impl<'a, 'tcx> AstConv<'tcx> for ItemCtxt<'a, 'tcx> {
                                  -> Result<Vec<ty::PolyTraitRef<'tcx>>, ErrorReported>
     {
         self.ccx.cycle_check(span, AstConvRequest::GetTypeParameterBounds(node_id), || {
-            let v = self.param_bounds.get_type_parameter_bounds(self, span, node_id)
+            let v = self.param_bounds.get_type_parameter_bounds(self, node_id)
                                      .into_iter()
                                      .filter_map(|p| p.to_opt_poly_trait_ref())
                                      .collect();
@@ -417,7 +423,7 @@ impl<'a, 'tcx> AstConv<'tcx> for ItemCtxt<'a, 'tcx> {
                                            assoc_name: ast::Name)
                                            -> bool
     {
-        if trait_def_id.krate == ast::LOCAL_CRATE {
+        if is_local(trait_def_id) {
             trait_defines_associated_type_named(self.ccx, trait_def_id.node, assoc_name)
         } else {
             let trait_def = ty::lookup_trait_def(self.tcx(), trait_def_id);
@@ -441,12 +447,89 @@ impl<'a, 'tcx> AstConv<'tcx> for ItemCtxt<'a, 'tcx> {
     }
 }
 
+impl<'a, 'tcx> resolve::ResolveCtxt<'a, 'tcx> for ItemCtxt<'a, 'tcx> {
+    fn ccx(&self) -> &CrateCtxt<'a, 'tcx> {
+        self.ccx
+    }
+    fn infcx(&self) -> &infer::InferCtxt<'a, 'tcx> {
+        &self.infcx
+    }
+    fn all_bound_predicates(&self) -> Vec<ty::Predicate<'tcx>> {
+        let mut predicates = vec![];
+        for predicate in &self.param_bounds.possible_trait_predicates(self) {
+            match *predicate {
+                ty::Predicate::Trait(..) => {
+                    predicates.push(predicate.clone())
+                }
+                _ => {}
+            }
+        }
+        predicates
+    }
+    fn trait_predicates(&self, did: ast::DefId) -> ty::GenericPredicates<'tcx> {
+        // SPS: This is broken, but we probably need some more work to be able
+        // to handle traits that haven't been converted yet, without causing
+        // spurious cycles.
+        ty::lookup_predicates(self.tcx(), did)
+    }
+    fn create_steps(&self, span: Span, self_ty: Ty<'tcx>, mode: probe::Mode)
+                    -> Option<Vec<probe::CandidateStep<'tcx>>> {
+        if mode == probe::Mode::MethodCall {
+            self.tcx().sess
+                .span_bug(span, "tried to resolve method call during collect")
+        }
+        Some(vec![probe::CandidateStep {
+            self_ty: self_ty,
+            autoderefs: 0,
+            unsize: false
+        }])
+    }
+    fn filter_closure_steps(&self, _trait_def_id: ast::DefId,
+                            _steps: Rc<Vec<probe::CandidateStep<'tcx>>>)
+                            -> Result<Vec<probe::CandidateStep<'tcx>>,
+                                      resolve::ResolveError> {
+        // There are no closures yet, so we don't have to do anything here.
+        Ok(Vec::new())
+    }
+    fn impl_ty_and_substs(&self, _span: Span, impl_def_id: ast::DefId)
+                          -> (Ty<'tcx>, Substs<'tcx>) {
+        // SPS: Again, broken.
+        let impl_pty = ty::lookup_item_type(self.tcx(), impl_def_id);
+
+        let type_vars =
+            impl_pty.generics.types.map(
+                |_| self.infcx().next_ty_var());
+
+        // see probe::erase_late_bound_regions() for an expl of why 'static
+        let region_placeholders =
+            impl_pty.generics.regions.map(
+                |_| ty::ReStatic);
+
+        let substs = Substs::new(type_vars, region_placeholders);
+        // SPS: The `FnCtxt` version of this function does other things, in
+        // particular normalizing associated types. What is the impact of that?
+        let impl_ty = impl_pty.ty.subst(self.tcx(), &substs);
+        (impl_ty, substs)
+    }
+    fn fast_impl_ty(&self, impl_def_id: ast::DefId) -> ty::TypeScheme<'tcx> {
+        // SPS: Broken broken broken.
+        ty::lookup_item_type(self.tcx(), impl_def_id)
+    }
+    fn check_impl_obligations(&self, _span: Span, _impl_def_id: ast::DefId,
+                              _substs: &Substs<'tcx>) -> bool {
+        // SPS: Actually implementing this would probably be a good idea.
+        true
+    }
+}
+
 /// Interface used to find the bounds on a type parameter from within
 /// an `ItemCtxt`. This allows us to use multiple kinds of sources.
 trait GetTypeParameterBounds<'tcx> {
+    fn possible_trait_predicates(&self,
+                                 astconv: &AstConv<'tcx>)
+                                 -> Vec<ty::Predicate<'tcx>>;
     fn get_type_parameter_bounds(&self,
                                  astconv: &AstConv<'tcx>,
-                                 span: Span,
                                  node_id: ast::NodeId)
                                  -> Vec<ty::Predicate<'tcx>>;
 }
@@ -455,23 +538,35 @@ trait GetTypeParameterBounds<'tcx> {
 impl<'a,'b,'tcx,A,B> GetTypeParameterBounds<'tcx> for (&'a A,&'b B)
     where A : GetTypeParameterBounds<'tcx>, B : GetTypeParameterBounds<'tcx>
 {
+    fn possible_trait_predicates(&self,
+                                 astconv: &AstConv<'tcx>)
+                                 -> Vec<ty::Predicate<'tcx>>
+    {
+        let mut v = self.0.possible_trait_predicates(astconv);
+        v.extend(self.1.possible_trait_predicates(astconv).into_iter());
+        v
+    }
     fn get_type_parameter_bounds(&self,
                                  astconv: &AstConv<'tcx>,
-                                 span: Span,
                                  node_id: ast::NodeId)
                                  -> Vec<ty::Predicate<'tcx>>
     {
-        let mut v = self.0.get_type_parameter_bounds(astconv, span, node_id);
-        v.extend(self.1.get_type_parameter_bounds(astconv, span, node_id).into_iter());
+        let mut v = self.0.get_type_parameter_bounds(astconv, node_id);
+        v.extend(self.1.get_type_parameter_bounds(astconv, node_id).into_iter());
         v
     }
 }
 
 /// Empty set of bounds.
 impl<'tcx> GetTypeParameterBounds<'tcx> for () {
+    fn possible_trait_predicates(&self,
+                                 _astconv: &AstConv<'tcx>)
+                                 -> Vec<ty::Predicate<'tcx>>
+    {
+        Vec::new()
+    }
     fn get_type_parameter_bounds(&self,
                                  _astconv: &AstConv<'tcx>,
-                                 _span: Span,
                                  _node_id: ast::NodeId)
                                  -> Vec<ty::Predicate<'tcx>>
     {
@@ -483,9 +578,14 @@ impl<'tcx> GetTypeParameterBounds<'tcx> for () {
 /// used when converting methods, because by that time the predicates
 /// from the trait/impl have been fully converted.
 impl<'tcx> GetTypeParameterBounds<'tcx> for ty::GenericPredicates<'tcx> {
+    fn possible_trait_predicates(&self,
+                                 _astconv: &AstConv<'tcx>)
+                                 -> Vec<ty::Predicate<'tcx>>
+    {
+        self.predicates.clone().into_vec()
+    }
     fn get_type_parameter_bounds(&self,
                                  astconv: &AstConv<'tcx>,
-                                 _span: Span,
                                  node_id: ast::NodeId)
                                  -> Vec<ty::Predicate<'tcx>>
     {
@@ -518,9 +618,59 @@ impl<'tcx> GetTypeParameterBounds<'tcx> for ty::GenericPredicates<'tcx> {
 /// would create artificial cycles. Instead we can only convert the
 /// bounds for those a type parameter `X` if `X::Foo` is used.
 impl<'tcx> GetTypeParameterBounds<'tcx> for ast::Generics {
+    fn possible_trait_predicates(&self,
+                                 astconv: &AstConv<'tcx>)
+                                 -> Vec<ty::Predicate<'tcx>>
+    {
+        // In the AST, bounds can derive from two places. Either
+        // written inline like `<T:Foo>` or in a where clause like
+        // `where T:Foo`.
+
+        let tcx = astconv.tcx();
+
+        let from_ty_params =
+            self.ty_params
+                .iter()
+                .flat_map(|p| {
+                    let id = p.id;
+                    p.bounds.iter().map(move |b| (id, b))
+                })
+                .flat_map(|(id, b)| {
+                    let ty = ty::mk_param_from_def(tcx,
+                                                   &tcx.type_parameter_def(id));
+                    predicates_from_bound(astconv, ty, b).into_iter()
+                });
+
+        let from_where_clauses =
+            self.where_clause
+                .predicates
+                .iter()
+                .filter_map(|wp| match *wp {
+                    ast::WherePredicate::BoundPredicate(ref bp) => Some(bp),
+                    _ => None
+                })
+                .flat_map(|bp| {
+                    let ast_ty = bp.bounded_ty.clone();
+                    bp.bounds.iter().map(move |b| {
+                        let did = tcx.def_map.borrow().get(&ast_ty.id)
+                                     .unwrap().base_def.def_id();
+                        let ty = if is_local(did) {
+                            // SPS: Potentially causes extra cycles?
+                            ast_ty_to_ty(astconv, &ExplicitRscope, &ast_ty)
+                        } else {
+                            ty::lookup_item_type(tcx, did).ty
+                        };
+                        (ty, b)
+                    })
+                })
+                .flat_map(|(ty, b)| {
+                    predicates_from_bound(astconv, ty, b).into_iter()
+                });
+
+        from_ty_params.chain(from_where_clauses).collect()
+    }
     fn get_type_parameter_bounds(&self,
                                  astconv: &AstConv<'tcx>,
-                                 _: Span,
                                  node_id: ast::NodeId)
                                  -> Vec<ty::Predicate<'tcx>>
     {
@@ -1156,7 +1306,7 @@ fn ensure_super_predicates_step(ccx: &CrateCtxt,
 
     debug!("ensure_super_predicates_step(trait_def_id={})", trait_def_id.repr(tcx));
 
-    if trait_def_id.krate != ast::LOCAL_CRATE {
+    if !is_local(trait_def_id) {
         // If this trait comes from an external crate, then all of the
         // supertraits it may depend on also must come from external
         // crates, and hence all of them already have their
@@ -1199,7 +1349,7 @@ fn ensure_super_predicates_step(ccx: &CrateCtxt,
 
         // Convert any explicit superbounds in the where clause,
         // e.g. `trait Foo where Self : Bar`:
-        let superbounds2 = generics.get_type_parameter_bounds(&ccx.icx(scope), item.span, item.id);
+        let superbounds2 = generics.get_type_parameter_bounds(&ccx.icx(scope), item.id);
 
         // Combine the two lists to form the complete set of superbounds:
         let superbounds = superbounds1.into_iter().chain(superbounds2.into_iter()).collect();
@@ -1419,7 +1569,7 @@ fn type_scheme_of_def_id<'a,'tcx>(ccx: &CrateCtxt<'a,'tcx>,
                                   def_id: ast::DefId)
                                   -> ty::TypeScheme<'tcx>
 {
-    if def_id.krate != ast::LOCAL_CRATE {
+    if !is_local(def_id) {
         return ty::lookup_item_type(ccx.tcx, def_id);
     }
 

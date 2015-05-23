@@ -1260,7 +1260,7 @@ impl<'a, 'tcx> resolve::ResolveCtxt<'a, 'tcx> for FnCtxt<'a, 'tcx> {
         &self.inh.infcx
     }
 
-    fn trait_predicates(&self) -> Vec<ty::Predicate<'tcx>> {
+    fn all_bound_predicates(&self) -> Vec<ty::Predicate<'tcx>> {
         let mut predicates = vec![];
         for predicate in &self.inh.param_env.caller_bounds {
             match *predicate {
@@ -1273,7 +1273,7 @@ impl<'a, 'tcx> resolve::ResolveCtxt<'a, 'tcx> for FnCtxt<'a, 'tcx> {
         predicates
     }
 
-    fn get_predicates(&self, did: ast::DefId) -> ty::GenericPredicates<'tcx> {
+    fn trait_predicates(&self, did: ast::DefId) -> ty::GenericPredicates<'tcx> {
         ty::lookup_predicates(self.tcx(), did)
     }
 
@@ -1365,9 +1365,10 @@ impl<'a, 'tcx> resolve::ResolveCtxt<'a, 'tcx> for FnCtxt<'a, 'tcx> {
             impl_pty.generics.types.map(
                 |_| self.infcx().next_ty_var());
 
+        // see probe::erase_late_bound_regions() for an expl of why 'static
         let region_placeholders =
             impl_pty.generics.regions.map(
-                |_| ty::ReStatic); // see erase_late_bound_regions() for an expl of why 'static
+                |_| ty::ReStatic);
 
         let substs = subst::Substs::new(type_vars, region_placeholders);
         let impl_ty = self.instantiate_type_scheme(span, &substs, &impl_pty.ty);

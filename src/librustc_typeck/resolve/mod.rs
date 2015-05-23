@@ -67,13 +67,14 @@ pub trait ResolveCtxt<'a, 'tcx>: AstConv<'tcx> {
 
     // Return copies of any predicates which constrain type parameters in the
     // current scope to implement specific traits.
-    fn trait_predicates(&self) -> Vec<ty::Predicate<'tcx>>;
+    fn all_bound_predicates(&self) -> Vec<ty::Predicate<'tcx>>;
 
-    fn get_predicates(&self, did: ast::DefId) -> ty::GenericPredicates<'tcx>;
+    // Return the predicates on a specific trait.
+    fn trait_predicates(&self, did: ast::DefId) -> ty::GenericPredicates<'tcx>;
 
     // Create the steps for a method call, or the single "step" for UFCS
     // resolution.
-    fn create_steps(&self, Span, Ty<'tcx>, probe::Mode)
+    fn create_steps(&self, span: Span, self_ty: Ty<'tcx>, mode: probe::Mode)
                     -> Option<Vec<probe::CandidateStep<'tcx>>>;
 
     // If the trait given is a `Fn` trait, pick out matching closures in the
